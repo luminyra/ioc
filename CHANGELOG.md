@@ -6,6 +6,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-26
+
 ### Added
 
 - Dependency injection container with generic `Provide`, `Supply` and `Resolve` methods, typed `Key[T]` names, health checks and ordered shutdown.
