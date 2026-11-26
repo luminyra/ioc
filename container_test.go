@@ -208,3 +208,22 @@ func TestConcurrentResolve(t *testing.T) {
 		t.Fatalf("builds = %d, want 1", builds.Load())
 	}
 }
+
+var sinkConfig *config
+
+func BenchmarkResolveBuilt(b *testing.B) {
+	c := New()
+	c.Supply(&config{dsn: "mem"})
+	key := Key[*config]("named")
+	key.Supply(c, &config{})
+	b.Run("Container.Resolve", func(b *testing.B) {
+		for b.Loop() {
+			sinkConfig, _ = c.Resolve[*config]()
+		}
+	})
+	b.Run("Key.Resolve", func(b *testing.B) {
+		for b.Loop() {
+			sinkConfig, _ = key.Resolve(c)
+		}
+	})
+}
