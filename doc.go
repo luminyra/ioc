@@ -40,10 +40,11 @@
 //
 // # Concurrency
 //
-// A Container is safe for concurrent use. A dependency cycle is reported with
-// [ErrCycle] when a single resolution chain revisits a service; resolving a
-// cyclic graph from several goroutines at once may deadlock instead, so keep
-// the graph acyclic.
+// A Container is safe for concurrent use, and concurrent resolutions of a
+// service build it once. A dependency cycle is reported with [ErrCycle], both
+// when a resolution chain revisits a service and when chains resolving
+// concurrently would wait for each other's services: a chain checks for such
+// a cycle before it waits, instead of deadlocking.
 //
 // The package is inspired by samber/do and uber-go/dig.
 package ioc

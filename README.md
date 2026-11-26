@@ -195,7 +195,7 @@ c.Provide(newUserService)
 
 - `Provide` and `Supply` register under `DefaultKey[T]()`, the type's name such as `"*sql.DB"`; a `Key[T]` registers under its own name. Lookups are by key, and the stored value is checked against `T`.
 - A provider receives a `*Container` that records the resolution path, which is how cycles are detected. Do not keep that value after the provider returns.
-- A `Container` is safe for concurrent use; concurrent resolutions of the same service build it once. Resolving a cyclic graph from several goroutines at once may deadlock, so keep the graph acyclic.
+- A `Container` is safe for concurrent use; concurrent resolutions of the same service build it once. A cycle is reported with `ErrCycle` even when it spans several goroutines, such as one resolving `a` (which needs `b`) while another resolves `b` (which needs `a`): before a resolution waits for a service that another one is building, it checks that the other is not, directly or through others, waiting for it. The check runs only when a resolution has to wait, so resolving a built service stays at about 12 ns with no allocations.
 - `Registered` and `Built` list service names, which helps when debugging wiring.
 
 ## Performance

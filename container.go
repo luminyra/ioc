@@ -15,7 +15,8 @@ var (
 	// ErrNotFound reports that no service is registered under a key.
 	ErrNotFound = errors.New("ioc: service not found")
 
-	// ErrCycle reports that building a service requires itself.
+	// ErrCycle reports that building a service requires itself, on one
+	// resolution chain or across chains resolving concurrently.
 	ErrCycle = errors.New("ioc: dependency cycle")
 
 	// ErrTypeMismatch reports that a service is not of the requested type.
@@ -44,8 +45,9 @@ type shutdowner interface {
 // tracks the resolution path for cycle detection and must not be kept after
 // the provider returns.
 type Container struct {
-	reg  *registry
-	path []string // names being built on this resolution chain
+	reg   *registry
+	path  []string // names being built on this resolution chain
+	chain *chain   // nil until the chain builds or waits for a service
 }
 
 type registry struct {
@@ -55,10 +57,19 @@ type registry struct {
 }
 
 type service struct {
-	mu      sync.Mutex
+	name    string
+	mu      sync.Mutex // held while the service is checked or built
 	build   func(*Container) (any, error)
 	isBuilt bool
 	value   any
+	owner   *chain // the chain building the service, protected by registry.mu
+}
+
+// chain is one resolution chain: a root Resolve call and the providers it
+// runs. Chains that resolve concurrently can wait for services that other
+// chains are building; the registry keeps these waits acyclic.
+type chain struct {
+	waitingFor *service // protected by registry.mu
 }
 
 // New returns an empty Container.
@@ -94,7 +105,63 @@ func (r *registry) add(name string, s *service) {
 	if _, ok := r.services[name]; ok {
 		panic(fmt.Sprintf("ioc: service %q already registered", name))
 	}
+	s.name = name
 	r.services[name] = s
+}
+
+// wait records that ch is about to wait for the lock of s. If the chain
+// building s is itself waiting, directly or through other chains, for a
+// service that ch is building, the chains would wait for each other forever;
+// wait reports that cycle as ErrCycle instead. path is the resolution path of
+// ch.
+func (r *registry) wait(ch *chain, s *service, path []string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.waitsFor(s, ch) {
+		names := append(slices.Clip(path), s.name)
+		for owner := s.owner; owner != ch; owner = owner.waitingFor.owner {
+			names = append(names, owner.waitingFor.name)
+		}
+		return fmt.Errorf("%w: %s", ErrCycle, strings.Join(names, " -> "))
+	}
+	ch.waitingFor = s
+	return nil
+}
+
+// waitsFor reports whether the chain building s is ch, or waits for it
+// through the chains building the services it waits for. Every wait goes
+// through wait, which refuses to close a cycle, so the walk ends; it is
+// bounded by the number of services all the same. r.mu must be held.
+func (r *registry) waitsFor(s *service, ch *chain) bool {
+	owner := s.owner
+	for range len(r.services) + 1 {
+		switch {
+		case owner == ch:
+			return true
+		case owner == nil || owner.waitingFor == nil:
+			return false
+		}
+		owner = owner.waitingFor.owner
+	}
+	return false
+}
+
+// claim records that ch holds the lock it waited for, and that it builds s
+// unless s is nil.
+func (r *registry) claim(ch *chain, s *service) {
+	r.mu.Lock()
+	ch.waitingFor = nil
+	if s != nil {
+		s.owner = ch
+	}
+	r.mu.Unlock()
+}
+
+// release records that s is no longer being built.
+func (r *registry) release(s *service) {
+	r.mu.Lock()
+	s.owner = nil
+	r.mu.Unlock()
 }
 
 func (r *registry) lookup(name string) *service {
@@ -112,12 +179,32 @@ func (c *Container) resolve(name string) (any, error) {
 		return nil, fmt.Errorf("%w: %q", ErrNotFound, name)
 	}
 
-	s.mu.Lock()
+	// The lock is free unless another chain is checking or building s, so
+	// resolving a built service never touches the waits between chains.
+	ch, waited := c.chain, false
+	if !s.mu.TryLock() {
+		if ch == nil {
+			ch = &chain{}
+		}
+		if err := c.reg.wait(ch, s, c.path); err != nil {
+			return nil, err
+		}
+		s.mu.Lock()
+		waited = true
+	}
 	defer s.mu.Unlock()
 	if s.isBuilt {
+		if waited {
+			c.reg.claim(ch, nil)
+		}
 		return s.value, nil
 	}
-	v, err := s.build(&Container{reg: c.reg, path: append(slices.Clip(c.path), name)})
+	if ch == nil {
+		ch = &chain{}
+	}
+	c.reg.claim(ch, s)
+	defer c.reg.release(s)
+	v, err := s.build(&Container{reg: c.reg, path: append(slices.Clip(c.path), name), chain: ch})
 	if err != nil {
 		if errors.Is(err, ErrCycle) {
 			return nil, err
