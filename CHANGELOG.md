@@ -9,4 +9,6 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - Dependency injection container with generic `Provide`, `Supply` and `Resolve` methods, typed `Key[T]` names, health checks and ordered shutdown.
+- Benchmarks (`make bench`).
+- A Makefile with the development tasks (`make help`).
 - Requires Go 1.27 or later.
